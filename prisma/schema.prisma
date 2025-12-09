@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Image {
+  id        String   @id @default(cuid())
+  url       String
+  metadata  Json
+  config    Json
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id            String      @id
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  preferences   Preference?
+  sessions      Session[]
+}
+
+model Preference {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  colorProfile    String?
+  contrastLevel   String?
+  labelPreference String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  metadata  Json
+  createdAt DateTime @default(now())
+}
