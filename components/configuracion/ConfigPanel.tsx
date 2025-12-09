@@ -63,18 +63,53 @@ export function ConfigurationPanel() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
+    // Load from localStorage first (for immediate display)
     const savedSettings = localStorage.getItem("Cromatizate-settings")
     if (savedSettings) {
-      const settings = JSON.parse(savedSettings)
-      setSelectedType(settings.type || "normal")
-      setIntensity([settings.intensity || 70])
-      setContrast([settings.contrast || 100])
-      setSaturation([settings.saturation || 100])
-      setTextDescriptions(settings.textDescriptions || false)
+      try {
+        const settings = JSON.parse(savedSettings)
+        setSelectedType(settings.type || "normal")
+        setIntensity([settings.intensity || 70])
+        setContrast([settings.contrast || 100])
+        setSaturation([settings.saturation || 100])
+        setTextDescriptions(settings.textDescriptions || false)
+      } catch {
+        // Invalid JSON, use defaults
+      }
     }
   }, [])
 
-  const handleSave = () => {
+  useEffect(() => {
+    // Load from backend after component mounts
+    const loadFromBackend = async () => {
+      try {
+        const response = await fetch('/api/users/preferences', {
+          credentials: 'include'
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          if (data.success && data.data) {
+            const prefs = data.data.preferences || {}
+            if (data.data.colorProfile) setSelectedType(data.data.colorProfile)
+            if (prefs.intensity) setIntensity([prefs.intensity])
+            if (prefs.contrast) setContrast([prefs.contrast])
+            if (prefs.saturation) setSaturation([prefs.saturation])
+            if (data.data.labelPreference) {
+              setTextDescriptions(data.data.labelPreference === 'enabled')
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading preferences from backend:', error)
+        // Continue with localStorage values
+      }
+    }
+    
+    loadFromBackend()
+  }, [])
+
+  const handleSave = async () => {
     const settings = {
       type: selectedType,
       intensity: intensity[0],
@@ -82,7 +117,37 @@ export function ConfigurationPanel() {
       saturation: saturation[0],
       textDescriptions,
     }
+    
+    // Save to localStorage (for backward compatibility)
     localStorage.setItem("Cromatizate-settings", JSON.stringify(settings))
+    
+    // Save to backend API
+    try {
+      const response = await fetch('/api/users/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          colorProfile: selectedType,
+          contrastLevel: `${contrast[0]}%`,
+          labelPreference: textDescriptions ? 'enabled' : 'disabled',
+          preferences: {
+            intensity: intensity[0],
+            saturation: saturation[0],
+            contrast: contrast[0],
+            textDescriptions
+          }
+        })
+      })
+      
+      if (!response.ok) {
+        console.error('Failed to save preferences to backend')
+      }
+    } catch (error) {
+      console.error('Error saving preferences:', error)
+      // Continue anyway - localStorage is saved
+    }
+    
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
