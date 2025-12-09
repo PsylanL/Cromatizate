@@ -7,8 +7,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { metadata } = body
 
-    // Validate required fields
-    if (!metadata || typeof metadata !== 'object') {
+    // Validate metadata exists and is an object
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
       return NextResponse.json(
         { 
           success: false, 
@@ -18,14 +18,15 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Get userId from body or headers
+    // Get userId in priority order: body.userId > header x-user-id > cookie user_id
     const userId = getUserIdFromRequest(request, body)
 
+    // If no userId is found anywhere, return 400 error
     if (!userId) {
       return NextResponse.json(
         { 
           success: false, 
-          error: 'userId is required in request body or x-user-id header'
+          error: 'userId is required. Provide it in request body, x-user-id header, or user_id cookie'
         },
         { status: 400 }
       )
@@ -34,15 +35,20 @@ export async function POST(request: NextRequest) {
     // Ensure user exists (creates if doesn't exist)
     await ensureUserExists(userId)
 
+    // Create session with userId and metadata
     const session = await prisma.session.create({
       data: {
-        metadata,
         userId,
+        metadata,
       },
     })
 
+    // Return standardized JSON format
     return NextResponse.json(
-      { success: true, data: session },
+      { 
+        success: true, 
+        data: session 
+      },
       { status: 201 }
     )
   } catch (error) {

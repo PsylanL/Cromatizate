@@ -1,43 +1,65 @@
+datasource db {
+  provider = "postgresql"
+}
+
 generator client {
   provider = "prisma-client-js"
 }
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+model Visitor {
+  id              String    @id
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  colorBlindness  String?
+  preferences     Json?
+  deviceInfo      Json?
+  notes           String?
+
+  interactions    VisitorInteraction[]
+  semanticOutputs SemanticOutput[]
+  progress        VisitorProgress[]
+  contentItems    ContentItem[]   // ← ESTA ERA LA QUE FALTABA
 }
 
-model Image {
+model VisitorInteraction {
   id        String   @id @default(cuid())
-  url       String
-  metadata  Json
-  config    Json
+  visitorId String
+  type      String
+  payload   Json
   createdAt DateTime @default(now())
+
+  visitor   Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
 }
 
-model User {
-  id            String      @id
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  preferences   Preference?
-  sessions      Session[]
-}
-
-model Preference {
+model SemanticOutput {
   id              String   @id @default(cuid())
-  userId          String   @unique
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  colorProfile    String?
-  contrastLevel   String?
-  labelPreference String?
+  visitorId       String
+  inputType       String
+  inputData       Json
+  jsonld          Json
+  recommendations Json?
   createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+
+  visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
 }
 
-model Session {
+model VisitorProgress {
   id        String   @id @default(cuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  metadata  Json
+  visitorId String
+  step      String
+  completed Boolean
+  metadata  Json?
   createdAt DateTime @default(now())
+
+  visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+}
+
+model ContentItem {
+  id        String   @id @default(cuid())
+  visitorId String
+  source    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  visitor   Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
 }

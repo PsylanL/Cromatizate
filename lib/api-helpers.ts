@@ -22,22 +22,35 @@ export async function ensureUserExists(userId: string) {
 }
 
 /**
- * Extracts userId from request body or headers
- * Note: This will consume the request body, so call it before other body reads
+ * Extracts userId from request in priority order:
+ * 1. body.userId (explicit override)
+ * 2. header x-user-id (injected by middleware)
+ * 3. cookie user_id (SSR fallback)
  * @param request - Next.js request object
  * @param body - Optional pre-parsed body object
  * @returns userId string or null
  */
-export function getUserIdFromRequest(request: Request, body?: any): string | null {
-  // Try to get from body first (if provided)
+export function getUserIdFromRequest(
+  request: Request | { headers: Headers; cookies: { get: (name: string) => { value: string } | undefined } },
+  body?: Record<string, unknown>
+): string | null {
+  // Priority 1: Try to get from body first (explicit override)
   if (body && body.userId && typeof body.userId === 'string') {
     return body.userId
   }
 
-  // Try to get from headers
+  // Priority 2: Try to get from headers (injected by middleware)
   const headerUserId = request.headers.get('x-user-id')
   if (headerUserId) {
     return headerUserId
+  }
+
+  // Priority 3: Try to get from cookie (SSR fallback)
+  if ('cookies' in request) {
+    const cookieUserId = request.cookies.get('user_id')?.value
+    if (cookieUserId) {
+      return cookieUserId
+    }
   }
 
   return null
