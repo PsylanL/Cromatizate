@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 
-export function middleware(req: NextRequest) {   
+export function proxy(req: NextRequest) {   
   const res = NextResponse.next();
 
   // 1. Read cookie
