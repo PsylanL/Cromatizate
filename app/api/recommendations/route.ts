@@ -48,42 +48,80 @@ export async function GET(request: NextRequest) {
     )
 
     // Get user data
-    const { data: visitor, error: visitorError } = await supabase
-      .from('Visitor')
-      .select('colorBlindness, preferences')
-      .eq('id', userId)
-      .single()
+    let visitor = null
+    let interactions: any[] = []
+    let existingRecommendations: any[] = []
 
-    if (visitorError || !visitor) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Visitor not found'
-        },
-        { status: 404 }
-      )
+    try {
+      const { data, error: visitorError } = await supabase
+        .from('Visitor')
+        .select('colorBlindness, preferences')
+        .eq('id', userId)
+        .single()
+
+      if (!visitorError && data) {
+        visitor = data
+      }
+    } catch (error) {
+      console.log('Visitor table might not exist or visitor not found')
     }
 
-    // Get user interactions
-    const { data: interactions } = await supabase
-      .from('VisitorInteraction')
-      .select('*')
-      .eq('visitorId', userId)
-      .order('createdAt', { ascending: false })
-      .limit(100)
+    // If visitor doesn't exist, create it with default values
+    if (!visitor) {
+      try {
+        const { data: newVisitor } = await supabase
+          .from('Visitor')
+          .insert({
+            id: userId,
+            colorBlindness: null,
+            preferences: {},
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          })
+          .select()
+          .single()
+        
+        visitor = newVisitor || { colorBlindness: null, preferences: {} }
+      } catch (error) {
+        // If we can't create, use defaults
+        visitor = { colorBlindness: null, preferences: {} }
+      }
+    }
 
-    // Get existing recommendations
-    const { data: existingRecommendations } = await supabase
-      .from('Recommendation')
-      .select('*')
-      .eq('visitorId', userId)
-      .order('createdAt', { ascending: false })
-      .limit(20)
+    // Get user interactions (if table exists)
+    try {
+      const { data: interactionData } = await supabase
+        .from('VisitorInteraction')
+        .select('*')
+        .eq('visitorId', userId)
+        .order('createdAt', { ascending: false })
+        .limit(100)
+      
+      interactions = interactionData || []
+    } catch (error) {
+      console.log('VisitorInteraction table might not exist')
+      interactions = []
+    }
+
+    // Get existing recommendations (if table exists)
+    try {
+      const { data: recData } = await supabase
+        .from('Recommendation')
+        .select('*')
+        .eq('visitorId', userId)
+        .order('createdAt', { ascending: false })
+        .limit(20)
+      
+      existingRecommendations = recData || []
+    } catch (error) {
+      console.log('Recommendation table might not exist')
+      existingRecommendations = []
+    }
 
     // Generate new recommendations based on current state
-    const colorBlindnessType = (visitor.colorBlindness || 'normal') as ColorBlindnessType
-    const preferences = visitor.preferences || {}
-    const analyzedPrefs = analyzeInteractions(interactions || [])
+    const colorBlindnessType = (visitor?.colorBlindness || 'normal') as ColorBlindnessType
+    const preferences = visitor?.preferences || {}
+    const analyzedPrefs = analyzeInteractions(interactions)
 
     // Merge analyzed preferences with stored preferences
     const mergedPreferences = {
@@ -95,36 +133,41 @@ export async function GET(request: NextRequest) {
         : preferences.palette
     }
 
+    // Generate recommendations (will be empty if type is 'normal' or null)
     const newRecommendations = generateRecommendations(
-      colorBlindnessType,
-      interactions || [],
+      colorBlindnessType === 'normal' ? null : colorBlindnessType,
+      interactions,
       mergedPreferences
     )
 
-    // Store new recommendations if they don't exist
+    // Store new recommendations if they don't exist (if table exists)
     if (newRecommendations.length > 0) {
-      const recommendationsToInsert = newRecommendations.map(rec => ({
-        visitorId: userId,
-        type: rec.type,
-        content: rec.content,
-        confidence: rec.content.confidence || 0.5,
-        source: rec.source
-      }))
+      try {
+        const recommendationsToInsert = newRecommendations.map(rec => ({
+          visitorId: userId,
+          type: rec.type,
+          content: rec.content,
+          confidence: rec.content.confidence || 0.5,
+          source: rec.source
+        }))
 
-      // Check which recommendations are new
-      const existingTypes = new Set(
-        existingRecommendations?.map(r => `${r.type}-${JSON.stringify(r.content)}`) || []
-      )
+        // Check which recommendations are new
+        const existingTypes = new Set(
+          existingRecommendations.map(r => `${r.type}-${JSON.stringify(r.content)}`)
+        )
 
-      const toInsert = recommendationsToInsert.filter(rec => {
-        const key = `${rec.type}-${JSON.stringify(rec.content)}`
-        return !existingTypes.has(key)
-      })
+        const toInsert = recommendationsToInsert.filter(rec => {
+          const key = `${rec.type}-${JSON.stringify(rec.content)}`
+          return !existingTypes.has(key)
+        })
 
-      if (toInsert.length > 0) {
-        await supabase
-          .from('Recommendation')
-          .insert(toInsert)
+        if (toInsert.length > 0) {
+          await supabase
+            .from('Recommendation')
+            .insert(toInsert)
+        }
+      } catch (error) {
+        console.log('Could not store recommendations (table might not exist)')
       }
     }
 

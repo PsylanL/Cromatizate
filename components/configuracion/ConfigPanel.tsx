@@ -63,24 +63,7 @@ export function ConfigurationPanel() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    // Load from localStorage first (for immediate display)
-    const savedSettings = localStorage.getItem("Cromatizate-settings")
-    if (savedSettings) {
-      try {
-        const settings = JSON.parse(savedSettings)
-        setSelectedType(settings.type || "normal")
-        setIntensity([settings.intensity || 70])
-        setContrast([settings.contrast || 100])
-        setSaturation([settings.saturation || 100])
-        setTextDescriptions(settings.textDescriptions || false)
-      } catch {
-        // Invalid JSON, use defaults
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    // Load from backend after component mounts
+    // Load from Supabase FIRST (source of truth - Agente de Perfilado)
     const loadFromBackend = async () => {
       try {
         const response = await fetch('/api/users/preferences', {
@@ -89,20 +72,64 @@ export function ConfigurationPanel() {
         
         if (response.ok) {
           const data = await response.json()
+          console.log('📥 Loading from Supabase (source of truth):', data)
+          
           if (data.success && data.data) {
             const prefs = data.data.preferences || {}
-            if (data.data.colorProfile) setSelectedType(data.data.colorProfile)
-            if (prefs.intensity) setIntensity([prefs.intensity])
-            if (prefs.contrast) setContrast([prefs.contrast])
-            if (prefs.saturation) setSaturation([prefs.saturation])
+            
+            // Load colorProfile - check both colorProfile and preferences.type
+            const savedType = data.data.colorProfile || prefs.type || "normal"
+            console.log('🎨 Setting type from backend:', savedType)
+            
+            // Apply preferences from backend (source of truth)
+            setSelectedType(savedType)
+            setIntensity([prefs.intensity ?? 70])
+            setContrast([prefs.contrast ?? 100])
+            setSaturation([prefs.saturation ?? 100])
+            
             if (data.data.labelPreference) {
               setTextDescriptions(data.data.labelPreference === 'enabled')
+            } else if (prefs.textDescriptions !== undefined) {
+              setTextDescriptions(prefs.textDescriptions)
+            } else {
+              setTextDescriptions(false)
             }
+            
+            // Cache in localStorage for fast access and offline support
+            const cachedSettings = {
+              type: savedType,
+              intensity: prefs.intensity ?? 70,
+              contrast: prefs.contrast ?? 100,
+              saturation: prefs.saturation ?? 100,
+              textDescriptions: prefs.textDescriptions ?? false
+            }
+            localStorage.setItem("Cromatizate-settings", JSON.stringify(cachedSettings))
+            console.log('💾 Cached in localStorage:', cachedSettings)
+            
+            return // Successfully loaded from backend
           }
+        } else {
+          console.warn('⚠️ Backend response not OK:', response.status)
         }
       } catch (error) {
-        console.error('Error loading preferences from backend:', error)
-        // Continue with localStorage values
+        console.error('❌ Error loading from backend:', error)
+      }
+      
+      // Fallback to localStorage if backend fails (offline mode)
+      console.log('📦 Falling back to localStorage cache')
+      const savedSettings = localStorage.getItem("Cromatizate-settings")
+      if (savedSettings) {
+        try {
+          const settings = JSON.parse(savedSettings)
+          console.log('📦 Loading from localStorage (fallback):', settings)
+          setSelectedType(settings.type || "normal")
+          setIntensity([settings.intensity || 70])
+          setContrast([settings.contrast || 100])
+          setSaturation([settings.saturation || 100])
+          setTextDescriptions(settings.textDescriptions || false)
+        } catch (error) {
+          console.error('❌ Invalid localStorage JSON:', error)
+        }
       }
     }
     
@@ -118,38 +145,48 @@ export function ConfigurationPanel() {
       textDescriptions,
     }
     
-    // Save to localStorage (for backward compatibility)
-    localStorage.setItem("Cromatizate-settings", JSON.stringify(settings))
-    
-    // Save to backend API
+    // Save to Supabase FIRST (source of truth - Agente de Perfilado)
     try {
       const response = await fetch('/api/users/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          colorProfile: selectedType,
+          colorProfile: selectedType === 'normal' ? null : selectedType,
           contrastLevel: `${contrast[0]}%`,
           labelPreference: textDescriptions ? 'enabled' : 'disabled',
           preferences: {
             intensity: intensity[0],
             saturation: saturation[0],
             contrast: contrast[0],
-            textDescriptions
+            textDescriptions,
+            type: selectedType // Always keep type in preferences for easy retrieval
           }
         })
       })
       
       if (!response.ok) {
-        console.error('Failed to save preferences to backend')
+        const errorData = await response.json().catch(() => ({}))
+        console.error('❌ Failed to save to Supabase:', errorData)
+        // Show error to user - this is critical for the Agente de Perfilado
+        alert('Error al guardar preferencias. Por favor, intenta de nuevo.')
+        return
       }
+      
+      const responseData = await response.json()
+      console.log('✅ Saved to Supabase (source of truth):', responseData)
+      
+      // Cache in localStorage AFTER successful save (for fast access and offline)
+      localStorage.setItem("Cromatizate-settings", JSON.stringify(settings))
+      console.log('💾 Cached in localStorage:', settings)
+      
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
     } catch (error) {
-      console.error('Error saving preferences:', error)
-      // Continue anyway - localStorage is saved
+      console.error('❌ Error saving to Supabase:', error)
+      alert('Error de conexión al guardar preferencias. Verifica tu conexión e intenta de nuevo.')
+      // Don't cache if save failed - keep localStorage in sync with backend
     }
-    
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
   }
 
   const handleReset = () => {
