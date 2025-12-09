@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { ensureUserExists, getUserIdFromRequest } from '@/lib/api-helpers'
+import { createClient } from '@supabase/supabase-js'
+import { getUserIdFromRequest } from '@/lib/api-helpers'
 
 export async function POST(request: NextRequest) {
   try {
@@ -32,16 +32,59 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Ensure user exists (creates if doesn't exist)
-    await ensureUserExists(userId)
+    // Initialize Supabase client
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
+
+    // Check if visitor exists in Visitor table
+    const { data: existingVisitor } = await supabase
+      .from('Visitor')
+      .select('id')
+      .eq('id', userId)
+      .single()
+
+    // If visitor doesn't exist, insert it
+    if (!existingVisitor) {
+      const { error: insertError } = await supabase
+        .from('Visitor')
+        .insert({ id: userId })
+
+      if (insertError) {
+        console.error('Error creating visitor:', insertError)
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: 'Failed to create visitor',
+            message: insertError.message
+          },
+          { status: 500 }
+        )
+      }
+    }
 
     // Create session with userId and metadata
-    const session = await prisma.session.create({
-      data: {
-        userId,
+    const { data: session, error: sessionError } = await supabase
+      .from('Sessions')
+      .insert({
+        user_id: userId,
         metadata,
-      },
-    })
+      })
+      .select()
+      .single()
+
+    if (sessionError) {
+      console.error('Error creating session:', sessionError)
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Failed to create session',
+          message: sessionError.message
+        },
+        { status: 500 }
+      )
+    }
 
     // Return standardized JSON format
     return NextResponse.json(
