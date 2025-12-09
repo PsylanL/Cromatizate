@@ -18,7 +18,19 @@ model Visitor {
   interactions    VisitorInteraction[]
   semanticOutputs SemanticOutput[]
   progress        VisitorProgress[]
-  contentItems    ContentItem[]   // ← ESTA ERA LA QUE FALTABA
+  contentItems    ContentItem[]
+  sessions        Session[]
+  recommendations Recommendation[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      Visitor  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  metadata  Json
+  createdAt DateTime @default(now())
+
+  @@map("Sessions")
 }
 
 model VisitorInteraction {
@@ -62,4 +74,32 @@ model ContentItem {
   createdAt DateTime @default(now())
 
   visitor   Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+}
+
+model Ontology {
+  id        String   @id @default(cuid())
+  domain    String   // "colorBlindness", "colors", "visualContent"
+  name      String
+  version   String   @default("1.0")
+  jsonld    Json     // Ontología en JSON-LD
+  rules     Json?    // Reglas de adaptación
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([domain, version])
+  @@index([domain])
+}
+
+model Recommendation {
+  id         String   @id @default(cuid())
+  visitorId  String
+  type       String   // "palette", "contrast", "saturation", "textual"
+  content    Json     // Recomendación específica
+  confidence Float    @default(0.5)
+  source     String   // "interaction", "ontology", "default"
+  createdAt  DateTime @default(now())
+  visitor    Visitor  @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+
+  @@index([visitorId, type])
+  @@index([visitorId, createdAt])
 }

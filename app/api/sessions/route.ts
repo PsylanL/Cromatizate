@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { ensureUserExists, getUserIdFromRequest } from '@/lib/api-helpers'
+import { createServerClient } from '@supabase/ssr'
+import { getUserIdFromRequest } from '@/lib/api-helpers'
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,7 +21,6 @@ export async function POST(request: NextRequest) {
     // Get userId in priority order: body.userId > header x-user-id > cookie user_id
     const userId = getUserIdFromRequest(request, body)
 
-    // If no userId is found anywhere, return 400 error
     if (!userId) {
       return NextResponse.json(
         { 
@@ -32,25 +31,94 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Ensure user exists (creates if doesn't exist)
-    await ensureUserExists(userId)
+    // Validate Supabase environment variables
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
 
-    // Create session with userId and metadata
-    const session = await prisma.session.create({
-      data: {
-        userId,
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('Missing Supabase environment variables:', {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseKey,
+      })
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Server configuration error: Supabase credentials are missing',
+          message: 'NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY must be set'
+        },
+        { status: 500 }
+      )
+    }
+
+    // Initialize Supabase with Publishable Key + Request Cookies
+    const supabase = createServerClient(
+      supabaseUrl,
+      supabaseKey,
+      {
+        cookies: {
+          get(name: string) {
+            return request.cookies.get(name)?.value
+          },
+        },
+      }
+    )
+
+    // Check if visitor exists
+    const { data: existingVisitor } = await supabase
+      .from('Visitor')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle()
+
+      if (!existingVisitor) {
+        const { error: insertError } = await supabase
+          .from('Visitor')
+          .insert({ 
+            id: userId,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          })
+      
+        if (insertError) {
+          console.error('Error creating visitor:', insertError)
+          return NextResponse.json(
+            { 
+              success: false, 
+              error: 'Failed to create visitor',
+              message: insertError.message
+            },
+            { status: 500 }
+          )
+        }
+      }
+
+    // Create session
+    const { data: session, error: sessionError } = await supabase
+      .from('Sessions')
+      .insert({
+        user_id: userId,
         metadata,
-      },
-    })
+      })
+      .select()
+      .single()
 
-    // Return standardized JSON format
+    if (sessionError) {
+      console.error('Error creating session:', sessionError)
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Failed to create session',
+          message: sessionError.message
+        },
+        { status: 500 }
+      )
+    }
+
     return NextResponse.json(
-      { 
-        success: true, 
-        data: session 
-      },
+      { success: true, data: session },
       { status: 201 }
     )
+
   } catch (error) {
     console.error('Error creating session:', error)
     return NextResponse.json(
@@ -63,4 +131,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-
