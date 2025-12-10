@@ -1,26 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@supabase/ssr'
-import { getUserIdFromRequest } from '@/lib/api-helpers'
+import { getVisitorId, createSimpleSupabaseClient, ensureVisitorExists } from '@/lib/api-helpers'
 
+/**
+ * GET /api/users/preferences
+ * 
+ * Returns raw preferences from database.
+ * No merging, no inference, no transformation.
+ * Frontend owns all preference state.
+ */
 export async function GET(request: NextRequest) {
   try {
-    const userId = getUserIdFromRequest(request)
+    const visitorId = getVisitorId(request)
 
-    if (!userId) {
+    if (!visitorId) {
       return NextResponse.json(
         { 
           success: false, 
-          error: 'userId is required. Provide it in request body, x-user-id header, or user_id cookie'
+          error: 'visitor_id is required. Make sure the middleware has set the visitor_id cookie'
         },
         { status: 400 }
       )
     }
 
-    // Validate Supabase environment variables
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
-
-    if (!supabaseUrl || !supabaseKey) {
+    // Create Supabase client first
+    let supabase
+    try {
+      supabase = createSimpleSupabaseClient()
+    } catch (error) {
+      console.error('Supabase client creation failed:', error)
       return NextResponse.json(
         { 
           success: false, 
@@ -30,98 +37,77 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const supabase = createServerClient(
-      supabaseUrl,
-      supabaseKey,
-      {
-        cookies: {
-          get(name: string) {
-            return request.cookies.get(name)?.value
-          },
-        },
-      }
-    )
-
-    // Get visitor preferences
-    console.log('🔍 Fetching visitor with userId:', userId)
-    const { data: visitor, error } = await supabase
+    // Fetch visitor directly - don't use ensureVisitorExists as it creates empty visitor
+    const { data: visitor, error: fetchError } = await supabase
       .from('Visitor')
-      .select('id, colorBlindness, preferences, updatedAt')
-      .eq('id', userId)
-      .single()
+      .select('id, preferences, colorBlindness')
+      .eq('id', visitorId)
+      .maybeSingle()
 
-    console.log('🔍 Visitor query result:', { visitor, error })
-
-    if (error) {
-      // If visitor doesn't exist, return empty preferences (not an error)
-      if (error.code === 'PGRST116') {
-        console.log('⚠️ Visitor not found, returning empty preferences')
-        return NextResponse.json(
-          { 
-            success: true, 
-            data: {
-              colorProfile: null,
-              contrastLevel: '100%',
-              labelPreference: 'disabled',
-              preferences: {}
-            }
-          },
-          { status: 200 }
-        )
-      }
-      
-      console.error('❌ Error fetching visitor:', error)
+    if (fetchError) {
+      console.error('Error fetching visitor:', fetchError)
       return NextResponse.json(
         { 
           success: false, 
           error: 'Failed to fetch visitor',
-          message: error.message
+          message: fetchError.message
         },
         { status: 500 }
       )
     }
 
-    // Handle null/undefined/string preferences from old visitors
-    const rawPrefs = visitor?.preferences
-    let prefs: Record<string, unknown> = {}
+    // If visitor doesn't exist, return empty preferences (don't create here)
+    if (!visitor) {
+      console.log('📥 [GET] Visitor not found, returning empty preferences')
+      return NextResponse.json(
+        { 
+          success: true, 
+          data: {
+            preferences: {},
+            colorBlindness: null
+          }
+        },
+        { status: 200 }
+      )
+    }
+
+    console.log('📥 [GET] Visitor data:', {
+      visitorId,
+      hasPreferences: !!visitor.preferences,
+      preferencesType: typeof visitor.preferences,
+      colorBlindness: visitor.colorBlindness,
+      preferencesKeys: visitor.preferences && typeof visitor.preferences === 'object' ? Object.keys(visitor.preferences as Record<string, unknown>) : []
+    })
+
+    // Return raw preferences - no transformation
+    const rawPreferences = visitor.preferences
     
-    if (rawPrefs) {
-      if (typeof rawPrefs === 'string') {
+    // Parse JSON if string (legacy support)
+    let preferences: Record<string, unknown> = {}
+    if (rawPreferences) {
+      if (typeof rawPreferences === 'string') {
         try {
-          prefs = JSON.parse(rawPrefs) as Record<string, unknown>
+          preferences = JSON.parse(rawPreferences) as Record<string, unknown>
         } catch {
-          prefs = {}
+          preferences = {}
         }
-      } else if (typeof rawPrefs === 'object' && !Array.isArray(rawPrefs) && rawPrefs !== null) {
-        prefs = rawPrefs as Record<string, unknown>
+      } else if (typeof rawPreferences === 'object' && !Array.isArray(rawPreferences) && rawPreferences !== null) {
+        preferences = rawPreferences as Record<string, unknown>
       }
     }
-    
-    // Ensure it's always an object
-    const safePrefs: Record<string, unknown> = typeof prefs === 'object' && !Array.isArray(prefs) ? prefs : {}
-    
-    // Return the actual colorBlindness value (could be null, or a string like 'tritanopia')
-    const colorProfile = visitor?.colorBlindness || null
 
-    console.log('📤 Returning preferences:', {
-      userId,
-      visitorId: visitor?.id,
-      colorProfile,
-      colorBlindness: visitor?.colorBlindness,
-      preferences: safePrefs,
-      preferencesRaw: rawPrefs,
-      preferencesType: typeof rawPrefs,
-      updatedAt: visitor?.updatedAt
+    console.log('📤 [GET] Returning preferences:', {
+      preferences,
+      colorBlindness: visitor.colorBlindness,
+      preferencesKeys: Object.keys(preferences)
     })
 
     return NextResponse.json(
       { 
         success: true, 
         data: {
-          colorProfile,
-          contrastLevel: typeof safePrefs.contrast === 'number' ? `${safePrefs.contrast}%` : '100%',
-          labelPreference: safePrefs.textDescriptions ? 'enabled' : 'disabled',
-          preferences: safePrefs
+          preferences, // Raw preferences object
+          colorBlindness: visitor.colorBlindness // Raw colorBlindness field
         }
       },
       { status: 200 }
@@ -139,28 +125,45 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function PUT(request: NextRequest) {
+/**
+ * POST /api/users/preferences
+ * 
+ * Overwrites preferences with exactly what the frontend sends.
+ * No merging, no fallback logic, no inference.
+ * Backend only stores raw data.
+ */
+export async function POST(request: NextRequest) {
   try {
+    const visitorId = getVisitorId(request)
     const body = await request.json()
-    const userId = getUserIdFromRequest(request, body)
-    
-    const { colorProfile, contrastLevel, labelPreference, preferences } = body
+    const { preferences } = body
 
-    if (!userId) {
+    if (!visitorId) {
       return NextResponse.json(
         { 
           success: false, 
-          error: 'userId is required. Provide it in request body, x-user-id header, or user_id cookie'
+          error: 'visitor_id is required. Make sure the middleware has set the visitor_id cookie'
         },
         { status: 400 }
       )
     }
 
-    // Validate Supabase environment variables
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
+    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'preferences must be a valid object'
+        },
+        { status: 400 }
+      )
+    }
 
-    if (!supabaseUrl || !supabaseKey) {
+    // Create Supabase client
+    let supabase
+    try {
+      supabase = createSimpleSupabaseClient()
+    } catch (error) {
+      console.error('Supabase client creation failed:', error)
       return NextResponse.json(
         { 
           success: false, 
@@ -170,162 +173,86 @@ export async function PUT(request: NextRequest) {
       )
     }
 
-    const supabase = createServerClient(
-      supabaseUrl,
-      supabaseKey,
-      {
-        cookies: {
-          get(name: string) {
-            return request.cookies.get(name)?.value
-          },
-        },
-      }
-    )
-
     // Ensure visitor exists
-    console.log('💾 Saving preferences for userId:', userId)
-    console.log('💾 Payload received:', { colorProfile, preferences, contrastLevel, labelPreference })
-    
-    const { data: existingVisitor } = await supabase
-      .from('Visitor')
-      .select('id, preferences, colorBlindness')
-      .eq('id', userId)
-      .maybeSingle()
+    const visitor = await ensureVisitorExists(visitorId)
 
-    console.log('💾 Existing visitor:', existingVisitor)
-
-    if (!existingVisitor) {
-      // Create visitor if doesn't exist
-      const insertData = {
-        id: userId,
-        colorBlindness: colorProfile === null || colorProfile === 'normal' ? null : colorProfile,
-        preferences: preferences || {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }
-      console.log('💾 Creating new visitor with:', insertData)
-      
-      const { data: newVisitor, error: createError } = await supabase
-        .from('Visitor')
-        .insert(insertData)
-        .select()
-        .single()
-
-      if (createError) {
-        console.error('❌ Error creating visitor:', createError)
-        throw createError
-      }
-      
-      console.log('✅ Visitor created:', newVisitor)
-      
+    if (!visitor) {
       return NextResponse.json(
         { 
-          success: true, 
-          data: {
-            colorProfile: newVisitor.colorBlindness,
-            preferences: newVisitor.preferences
-          }
+          success: false, 
+          error: 'Failed to create or retrieve visitor'
         },
-        { status: 200 }
-      )
-    } else {
-      // Update visitor preferences
-      // Handle null/undefined/string preferences from old visitors
-      const rawCurrentPrefs = existingVisitor.preferences
-      let currentPrefs = {}
-      
-      if (rawCurrentPrefs) {
-        if (typeof rawCurrentPrefs === 'string') {
-          try {
-            currentPrefs = JSON.parse(rawCurrentPrefs)
-          } catch {
-            currentPrefs = {}
-          }
-        } else if (typeof rawCurrentPrefs === 'object' && !Array.isArray(rawCurrentPrefs)) {
-          currentPrefs = rawCurrentPrefs
-        }
-      }
-      
-      // Ensure currentPrefs is always an object
-      const safeCurrentPrefs = typeof currentPrefs === 'object' && !Array.isArray(currentPrefs) ? currentPrefs : {}
-      
-      const updatedPrefs = preferences 
-        ? { ...safeCurrentPrefs, ...preferences }
-        : safeCurrentPrefs
-
-      const updateData: {
-        updatedAt: string
-        colorBlindness?: string | null
-        preferences?: Record<string, unknown>
-      } = {
-        updatedAt: new Date().toISOString()
-      }
-
-      // Always update colorBlindness if provided (even if null)
-      if (colorProfile !== undefined) {
-        updateData.colorBlindness = colorProfile === null || colorProfile === 'normal' ? null : colorProfile
-      }
-      
-      // Always update preferences (ensure it's an object, not null)
-      if (preferences !== undefined) {
-        updateData.preferences = updatedPrefs
-      } else if (rawCurrentPrefs === null || rawCurrentPrefs === undefined) {
-        // Fix old visitors that have null/undefined preferences
-        updateData.preferences = {}
-      }
-
-      console.log('💾 Updating visitor with:', updateData)
-      console.log('💾 Current preferences before update:', {
-        raw: rawCurrentPrefs,
-        parsed: safeCurrentPrefs,
-        type: typeof rawCurrentPrefs
-      })
-
-      const { data: updatedVisitor, error: updateError } = await supabase
-        .from('Visitor')
-        .update(updateData)
-        .eq('id', userId)
-        .select()
-        .single()
-
-      if (updateError) {
-        console.error('❌ Error updating visitor:', updateError)
-        throw updateError
-      }
-
-      // Parse updated preferences to ensure they're valid
-      let updatedPrefsParsed = {}
-      if (updatedVisitor.preferences) {
-        if (typeof updatedVisitor.preferences === 'string') {
-          try {
-            updatedPrefsParsed = JSON.parse(updatedVisitor.preferences)
-          } catch {
-            updatedPrefsParsed = {}
-          }
-        } else if (typeof updatedVisitor.preferences === 'object' && !Array.isArray(updatedVisitor.preferences)) {
-          updatedPrefsParsed = updatedVisitor.preferences
-        }
-      }
-
-      console.log('✅ Visitor updated:', updatedVisitor)
-      console.log('✅ Updated visitor data:', {
-        colorBlindness: updatedVisitor.colorBlindness,
-        preferences: updatedPrefsParsed,
-        preferencesRaw: updatedVisitor.preferences,
-        preferencesType: typeof updatedVisitor.preferences
-      })
-
-      return NextResponse.json(
-        { 
-          success: true, 
-          data: {
-            colorProfile: updatedVisitor.colorBlindness,
-            preferences: updatedPrefsParsed || {}
-          }
-        },
-        { status: 200 }
+        { status: 500 }
       )
     }
+
+    // Extract colorBlindness from preferences.type if present (for legacy support) 
+    const colorBlindness = preferences.type && preferences.type !== 'normal' 
+      ? String(preferences.type) 
+      : null
+
+    console.log('💾 [POST] Saving preferences:', {
+      visitorId,
+      preferences,
+      colorBlindness,
+      preferencesType: preferences.type
+    })
+
+    // Update visitor with exactly what frontend sent - no merging
+    const { error: updateError } = await supabase
+      .from('Visitor')
+      .update({
+        preferences, // Store exactly what frontend sent
+        colorBlindness, // Update colorBlindness for legacy support
+        updatedAt: new Date().toISOString()
+      })
+      .eq('id', visitorId)
+
+    if (updateError) {
+      console.error('❌ [POST] Error updating preferences:', updateError)
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Failed to update preferences',
+          message: updateError.message
+        },
+        { status: 500 }
+      )
+    }
+
+    console.log('✅ [POST] Update query executed successfully')
+
+    // Fetch the updated data to verify it was saved
+    const { data: verifyData, error: verifyError } = await supabase
+      .from('Visitor')
+      .select('id, preferences, colorBlindness')
+      .eq('id', visitorId)
+      .maybeSingle()
+
+    if (verifyError) {
+      console.warn('⚠️ [POST] Could not verify saved data:', verifyError)
+    } else if (verifyData) {
+      console.log('✅ [POST] Verified saved data:', {
+        id: verifyData.id,
+        preferences: verifyData.preferences,
+        colorBlindness: verifyData.colorBlindness,
+        matchesSent: JSON.stringify(verifyData.preferences) === JSON.stringify(preferences)
+      })
+    } else {
+      console.warn('⚠️ [POST] Visitor not found after update')
+    }
+
+    // Return exactly what we stored
+    return NextResponse.json(
+      { 
+        success: true, 
+        data: {
+          preferences, // Return exactly what was stored
+          colorBlindness
+        }
+      },
+      { status: 200 }
+    )
   } catch (error) {
     console.error('Error updating preferences:', error)
     return NextResponse.json(
@@ -338,4 +265,3 @@ export async function PUT(request: NextRequest) {
     )
   }
 }
-

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { ensureUserExists } from '@/lib/api-helpers'
+import { ensureVisitorExists } from '@/lib/api-helpers'
 
 export async function GET(
   request: NextRequest,
@@ -10,7 +10,7 @@ export async function GET(
     const { id } = await params
     
     // Ensure user exists (creates if doesn't exist)
-    const user = await ensureUserExists(id)
+    const user = await ensureVisitorExists(id)
 
     return NextResponse.json(
       { success: true, data: user },

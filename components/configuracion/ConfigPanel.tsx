@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import Image from "next/image"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
@@ -62,128 +63,180 @@ export function ConfigurationPanel() {
   const [textDescriptions, setTextDescriptions] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  useEffect(() => {
-    // Load from Supabase FIRST (source of truth - Agente de Perfilado)
-    const loadFromBackend = async () => {
-      try {
-        const response = await fetch('/api/users/preferences', {
-          credentials: 'include'
-        })
+  // NORMALIZED: Load from backend - preferences.type is the single source of truth
+  const loadFromBackend = async () => {
+    try {
+      const response = await fetch('/api/users/preferences', {
+        credentials: 'include'
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
         
-        if (response.ok) {
-          const data = await response.json()
-          console.log('📥 Loading from Supabase (source of truth):', data)
+        if (process.env.NODE_ENV === 'development') {
+          console.log('📥 [BACKEND] Loading from Supabase (source of truth):', data)
+        }
+        
+        if (data.success && data.data) {
+          const prefs = data.data.preferences || {}
           
-          if (data.success && data.data) {
-            const prefs = data.data.preferences || {}
+          // Check if preferences object is empty (new visitor or no preferences saved yet)
+          const hasPreferences = Object.keys(prefs).length > 0 && prefs.type !== undefined
+          
+          if (process.env.NODE_ENV === 'development') {
+            console.log('📥 [BACKEND] Loaded preferences:', {
+              hasPreferences,
+              preferences: prefs,
+              colorBlindness: data.data.colorBlindness,
+              preferencesKeys: Object.keys(prefs),
+              hasType: prefs.type !== undefined
+            })
+          }
+          
+          // Only apply preferences if they exist, otherwise fall through to localStorage
+          if (hasPreferences) {
+            // Frontend owns state - load raw preferences from backend
+            const savedType = (prefs.type as string) || data.data.colorBlindness || "normal"
             
-            // Load colorProfile - check both colorProfile and preferences.type
-            const savedType = data.data.colorProfile || prefs.type || "normal"
-            console.log('🎨 Setting type from backend:', savedType)
-            
-            // Apply preferences from backend (source of truth)
-            setSelectedType(savedType)
-            setIntensity([prefs.intensity ?? 70])
-            setContrast([prefs.contrast ?? 100])
-            setSaturation([prefs.saturation ?? 100])
-            
-            if (data.data.labelPreference) {
-              setTextDescriptions(data.data.labelPreference === 'enabled')
-            } else if (prefs.textDescriptions !== undefined) {
-              setTextDescriptions(prefs.textDescriptions)
-            } else {
-              setTextDescriptions(false)
+            if (process.env.NODE_ENV === 'development') {
+              console.log('🎨 [BACKEND] Applying preferences from backend:', savedType)
             }
             
-            // Cache in localStorage for fast access and offline support
+            // Apply ALL preferences from backend (source of truth)
+            setSelectedType(savedType)
+            setIntensity([typeof prefs.intensity === 'number' ? prefs.intensity : 70])
+            setContrast([typeof prefs.contrast === 'number' ? prefs.contrast : 100])
+            setSaturation([typeof prefs.saturation === 'number' ? prefs.saturation : 100])
+            setTextDescriptions(typeof prefs.textDescriptions === 'boolean' ? prefs.textDescriptions : false)
+            
+            // Cache in localStorage ONLY after successful backend load
             const cachedSettings = {
               type: savedType,
-              intensity: prefs.intensity ?? 70,
-              contrast: prefs.contrast ?? 100,
-              saturation: prefs.saturation ?? 100,
-              textDescriptions: prefs.textDescriptions ?? false
+              intensity: typeof prefs.intensity === 'number' ? prefs.intensity : 70,
+              contrast: typeof prefs.contrast === 'number' ? prefs.contrast : 100,
+              saturation: typeof prefs.saturation === 'number' ? prefs.saturation : 100,
+              textDescriptions: typeof prefs.textDescriptions === 'boolean' ? prefs.textDescriptions : false
             }
             localStorage.setItem("Cromatizate-settings", JSON.stringify(cachedSettings))
-            console.log('💾 Cached in localStorage:', cachedSettings)
             
-            return // Successfully loaded from backend
+            if (process.env.NODE_ENV === 'development') {
+              console.log('💾 [BACKEND] Cached in localStorage:', cachedSettings)
+            }
+            
+            return true // Successfully loaded from backend
+          } else {
+            // No preferences in backend - will fall through to localStorage check
+            if (process.env.NODE_ENV === 'development') {
+              console.log('⚠️ [BACKEND] No valid preferences in backend (empty or missing type), will check localStorage')
+            }
           }
-        } else {
-          console.warn('⚠️ Backend response not OK:', response.status)
         }
-      } catch (error) {
-        console.error('❌ Error loading from backend:', error)
+      } else {
+        console.warn('⚠️ [BACKEND] Response not OK:', response.status)
       }
-      
-      // Fallback to localStorage if backend fails (offline mode)
-      console.log('📦 Falling back to localStorage cache')
-      const savedSettings = localStorage.getItem("Cromatizate-settings")
-      if (savedSettings) {
-        try {
-          const settings = JSON.parse(savedSettings)
-          console.log('📦 Loading from localStorage (fallback):', settings)
-          setSelectedType(settings.type || "normal")
-          setIntensity([settings.intensity || 70])
-          setContrast([settings.contrast || 100])
-          setSaturation([settings.saturation || 100])
-          setTextDescriptions(settings.textDescriptions || false)
-        } catch (error) {
-          console.error('❌ Invalid localStorage JSON:', error)
-        }
+    } catch (error) {
+      console.error('❌ [BACKEND] Error loading from backend:', error)
+    }
+    
+    // Fallback to localStorage ONLY if backend fails (offline mode)
+    console.log('📦 [FALLBACK] Falling back to localStorage cache')
+    const savedSettings = localStorage.getItem("Cromatizate-settings")
+    if (savedSettings) {
+      try {
+        const settings = JSON.parse(savedSettings)
+        console.log('📦 [FALLBACK] Loading from localStorage:', settings)
+        setSelectedType(settings.type || "normal")
+        setIntensity([settings.intensity || 70])
+        setContrast([settings.contrast || 100])
+        setSaturation([settings.saturation || 100])
+        setTextDescriptions(settings.textDescriptions || false)
+        return false // Loaded from fallback
+      } catch (error) {
+        console.error('❌ [FALLBACK] Invalid localStorage JSON:', error)
       }
     }
     
-    loadFromBackend()
+    return false // No data loaded
+  }
+
+  // Load on mount
+  useEffect(() => {
+    // Load preferences from backend on mount
+    // setState is called inside async function, not synchronously
+    void loadFromBackend()
   }, [])
 
   const handleSave = async () => {
-    const settings = {
-      type: selectedType,
+    // Build complete preferences object with ALL fields
+    const completePreferences = {
+      type: selectedType, // NORMALIZED: Single source of truth
       intensity: intensity[0],
       contrast: contrast[0],
       saturation: saturation[0],
       textDescriptions,
     }
     
+    if (process.env.NODE_ENV === 'development') {
+      console.log('💾 [SAVE] Saving preferences:', completePreferences)
+    }
+    
     // Save to Supabase FIRST (source of truth - Agente de Perfilado)
     try {
       const response = await fetch('/api/users/preferences', {
-        method: 'PUT',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          colorProfile: selectedType === 'normal' ? null : selectedType,
-          contrastLevel: `${contrast[0]}%`,
-          labelPreference: textDescriptions ? 'enabled' : 'disabled',
-          preferences: {
-            intensity: intensity[0],
-            saturation: saturation[0],
-            contrast: contrast[0],
-            textDescriptions,
-            type: selectedType // Always keep type in preferences for easy retrieval
-          }
+          preferences: completePreferences // Frontend sends complete preferences object
         })
       })
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        console.error('❌ Failed to save to Supabase:', errorData)
-        // Show error to user - this is critical for the Agente de Perfilado
+        console.error('❌ [SAVE] Failed to save to Supabase:', errorData)
         alert('Error al guardar preferencias. Por favor, intenta de nuevo.')
         return
       }
       
       const responseData = await response.json()
-      console.log('✅ Saved to Supabase (source of truth):', responseData)
       
-      // Cache in localStorage AFTER successful save (for fast access and offline)
-      localStorage.setItem("Cromatizate-settings", JSON.stringify(settings))
-      console.log('💾 Cached in localStorage:', settings)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('✅ [SAVE] Saved to Supabase (source of truth):', responseData)
+        console.log('✅ [SAVE] Response data preferences:', responseData.data?.preferences)
+      }
       
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      // Update UI from response - backend returns exactly what we sent
+      if (responseData.success && responseData.data?.preferences) {
+        const savedPrefs = responseData.data.preferences
+        const savedType = typeof savedPrefs.type === "string" ? savedPrefs.type : selectedType
+        
+        if (process.env.NODE_ENV === 'development') {
+          console.log('🔄 [SAVE] Backend confirmed save:', savedPrefs)
+        }
+        
+        // Update state from response (should match what we sent)
+        setSelectedType(savedType)
+        setIntensity([typeof savedPrefs.intensity === 'number' ? savedPrefs.intensity : intensity[0]])
+        setContrast([typeof savedPrefs.contrast === 'number' ? savedPrefs.contrast : contrast[0]])
+        setSaturation([typeof savedPrefs.saturation === 'number' ? savedPrefs.saturation : saturation[0]])
+        setTextDescriptions(typeof savedPrefs.textDescriptions === 'boolean' ? savedPrefs.textDescriptions : textDescriptions)
+        
+        // Cache in localStorage
+        localStorage.setItem("Cromatizate-settings", JSON.stringify(completePreferences))
+        
+        if (process.env.NODE_ENV === 'development') {
+          console.log('💾 [SAVE] Cached in localStorage:', completePreferences)
+        }
+        
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      } else {
+        console.warn('⚠️ [SAVE] Response missing preferences')
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      }
     } catch (error) {
-      console.error('❌ Error saving to Supabase:', error)
+      console.error('❌ [SAVE] Error saving to Supabase:', error)
       alert('Error de conexión al guardar preferencias. Verifica tu conexión e intenta de nuevo.')
       // Don't cache if save failed - keep localStorage in sync with backend
     }
@@ -380,10 +433,13 @@ export function ConfigurationPanel() {
                 className="aspect-video rounded-lg overflow-hidden border border-border"
                 style={{ filter: getPreviewFilter() }}
               >
-                <img
-                  src="/colorful-landscape-with-flowers.jpg"
+                <Image
+                  src="/colorful-landscape-with-flowers.jpg.png"
                   alt="Imagen de muestra con paisaje colorido adaptada según tu configuración"
                   className="w-full h-full object-cover"
+                  width={600}
+                  height={400}
+                  priority
                 />
               </div>
             </div>

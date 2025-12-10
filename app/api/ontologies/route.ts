@@ -1,23 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@supabase/ssr'
-import { getUserIdFromRequest } from '@/lib/api-helpers'
+import { getVisitorId, createSimpleSupabaseClient } from '@/lib/api-helpers'
 import { 
   generateColorBlindnessOntology, 
   generateRecommendations,
   type ColorBlindnessType 
 } from '@/lib/ontology-helpers'
+import { generateVisualContentOntology } from '@/lib/semantic-agent'
 
+/**
+ * GET /api/ontologies
+ * 
+ * Returns ontology in JSON-LD format.
+ * 
+ * Rules:
+ * - Read ontology from DB if exists
+ * - If missing, generate via existing helper
+ * - Return JSON-LD
+ * - Optionally return recommendations ONLY IF rules + interactions exist
+ * - Do NOT try to merge preferences or override them
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams
     const domain = searchParams.get('domain') || 'colorBlindness'
     const colorBlindnessType = searchParams.get('type') as ColorBlindnessType | null
 
-    // Validate Supabase environment variables
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
-
-    if (!supabaseUrl || !supabaseKey) {
+    // Create Supabase client
+    let supabase
+    try {
+      supabase = createSimpleSupabaseClient()
+    } catch (error) {
+      console.error('Supabase client creation failed:', error)
       return NextResponse.json(
         { 
           success: false, 
@@ -26,18 +39,6 @@ export async function GET(request: NextRequest) {
         { status: 500 }
       )
     }
-
-    const supabase = createServerClient(
-      supabaseUrl,
-      supabaseKey,
-      {
-        cookies: {
-          get(name: string) {
-            return request.cookies.get(name)?.value
-          },
-        },
-      }
-    )
 
     // Try to get ontology from database (if table exists)
     let storedOntology = null
@@ -61,7 +62,7 @@ export async function GET(request: NextRequest) {
 
     if (storedOntology) {
       // Use stored ontology
-      jsonld = storedOntology.jsonld
+      jsonld = storedOntology.jsonld as Record<string, unknown>
       
       // Get rules if available
       if (storedOntology.rules) {
@@ -70,47 +71,74 @@ export async function GET(request: NextRequest) {
           : []
       }
     } else {
-      // Generate ontology on the fly
-      const type = colorBlindnessType || 'deuteranopia'
-      jsonld = generateColorBlindnessOntology(type)
-      
-      // Generate suggestions based on type
-      if (colorBlindnessType) {
-        suggestions = generateRecommendations(colorBlindnessType, [], {})
+      // Generate ontology on the fly based on domain
+      if (domain === 'visualContent') {
+        jsonld = generateVisualContentOntology()
+        suggestions = []
+      } else {
+        // Generate Color Blindness Ontology (default)
+        const type = colorBlindnessType || 'deuteranopia'
+        jsonld = generateColorBlindnessOntology(type)
+        
+        // Generate basic suggestions based on type
+        if (colorBlindnessType) {
+          suggestions = generateRecommendations(colorBlindnessType, [], {})
+        }
       }
     }
 
-    // Get user preferences if userId is available
-    const userId = getUserIdFromRequest(request)
-    if (userId && colorBlindnessType) {
+    // Optional: Generate recommendations ONLY IF visitor exists AND has interactions
+    // This is for agents to use, not for modifying preferences
+    const visitorId = getVisitorId(request)
+    if (visitorId && storedOntology?.rules) {
       try {
-        // Get user interactions to personalize recommendations
-        const { data: interactions } = await supabase
-          .from('VisitorInteraction')
-          .select('*')
-          .eq('visitorId', userId)
-          .order('createdAt', { ascending: false })
-          .limit(50)
+        // Get visitor interactions (last 50) - agents use this data
+        let interactions: unknown[] = []
+        try {
+          const { data: interactionData } = await supabase
+            .from('VisitorInteraction')
+            .select('*')
+            .eq('visitorId', visitorId)
+            .order('createdAt', { ascending: false })
+            .limit(50)
+          
+          interactions = interactionData || []
+        } catch {
+          interactions = []
+        }
 
-        // Get user preferences
-        const { data: visitor } = await supabase
-          .from('Visitor')
-          .select('preferences, colorBlindness')
-          .eq('id', userId)
-          .single()
+        // Get visitor data (agents read this, don't modify it)
+        let visitor: { preferences: unknown; colorBlindness: string | null } | null = null
+        try {
+          const { data: visitorData } = await supabase
+            .from('Visitor')
+            .select('preferences, colorBlindness')
+            .eq('id', visitorId)
+            .maybeSingle()
+          
+          visitor = visitorData
+        } catch {
+          visitor = null
+        }
 
-        const userType = (visitor?.colorBlindness || colorBlindnessType) as ColorBlindnessType
-        const userPreferences = visitor?.preferences || {}
-        
-        suggestions = generateRecommendations(
-          userType,
-          interactions || [],
-          userPreferences
-        )
+        // Only generate recommendations if we have interactions AND visitor data
+        if (interactions.length > 0 && visitor) {
+          const userType = (visitor.colorBlindness || colorBlindnessType || 'normal') as ColorBlindnessType
+          const userPreferences = (visitor.preferences && typeof visitor.preferences === 'object' && !Array.isArray(visitor.preferences))
+            ? visitor.preferences as Record<string, unknown>
+            : {}
+          
+          // Generate recommendations based on interactions + ontology rules
+          // This is for agents, not for modifying preferences
+          suggestions = generateRecommendations(
+            userType,
+            interactions as Array<Record<string, unknown>>,
+            userPreferences
+          )
+        }
       } catch (error) {
-        // If tables don't exist, use basic recommendations
-        console.log('Using basic recommendations without user data')
-        suggestions = generateRecommendations(colorBlindnessType, [], {})
+        // If tables don't exist or error, use basic recommendations
+        console.log('Could not fetch visitor data for recommendations:', error)
       }
     }
 
@@ -141,6 +169,12 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/**
+ * POST /api/ontologies
+ * 
+ * Creates or updates an ontology in the database.
+ * No user authentication required - ontologies are public knowledge.
+ */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -156,11 +190,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Validate Supabase environment variables
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
-
-    if (!supabaseUrl || !supabaseKey) {
+    // Create Supabase client
+    let supabase
+    try {
+      supabase = createSimpleSupabaseClient()
+    } catch (error) {
+      console.error('Supabase client creation failed:', error)
       return NextResponse.json(
         { 
           success: false, 
@@ -170,25 +205,21 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createServerClient(
-      supabaseUrl,
-      supabaseKey,
-      {
-        cookies: {
-          get(name: string) {
-            return request.cookies.get(name)?.value
-          },
-        },
-      }
-    )
-
     // Check if ontology exists
-    const { data: existing } = await supabase
-      .from('Ontology')
-      .select('id')
-      .eq('domain', domain)
-      .eq('version', version || '1.0')
-      .maybeSingle()
+    let existing
+    try {
+      const { data } = await supabase
+        .from('Ontology')
+        .select('id')
+        .eq('domain', domain)
+        .eq('version', version || '1.0')
+        .maybeSingle()
+      
+      existing = data
+    } catch (error) {
+      console.log('Ontology table might not exist, will try to create:', error)
+      existing = null
+    }
 
     let result
     if (existing) {
@@ -199,12 +230,16 @@ export async function POST(request: NextRequest) {
           name,
           jsonld,
           rules: rules || null,
+          updatedAt: new Date().toISOString()
         })
         .eq('id', existing.id)
         .select()
         .single()
 
-      if (error) throw error
+      if (error) {
+        console.error('Error updating ontology:', error)
+        throw error
+      }
       result = data
     } else {
       // Create new
@@ -216,11 +251,16 @@ export async function POST(request: NextRequest) {
           version: version || '1.0',
           jsonld,
           rules: rules || null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         })
         .select()
         .single()
 
-      if (error) throw error
+      if (error) {
+        console.error('Error creating ontology:', error)
+        throw error
+      }
       result = data
     }
 
@@ -240,4 +280,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-

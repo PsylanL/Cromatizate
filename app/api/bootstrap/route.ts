@@ -1,49 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { ensureUserExists, getUserIdFromRequest } from '@/lib/api-helpers'
+import { getVisitorId, ensureVisitorExists, createSimpleSupabaseClient } from '@/lib/api-helpers'
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const userId = getUserIdFromRequest(request, body)
+    const visitorId = getVisitorId(request)
 
-    if (!userId) {
+    if (!visitorId) {
       return NextResponse.json(
         { 
           success: false, 
-          error: 'userId is required in request body or x-user-id header'
+          error: 'visitor_id is required. Make sure the middleware has set the visitor_id cookie'
         },
         { status: 400 }
       )
     }
 
-    // Ensure user exists
-    const user = await ensureUserExists(userId)
+    // Ensure visitor exists
+    const visitor = await ensureVisitorExists(visitorId)
 
-    // Get or create preferences
-    let preferences = user.preferences
-    if (!preferences) {
-      preferences = await prisma.preference.create({
-        data: { userId: user.id },
-      })
+    if (!visitor) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: 'Failed to create or retrieve visitor'
+        },
+        { status: 500 }
+      )
     }
+
+    // Parse preferences
+    const preferences = (visitor.preferences && typeof visitor.preferences === 'object' && !Array.isArray(visitor.preferences))
+      ? visitor.preferences as Record<string, unknown>
+      : {}
 
     return NextResponse.json(
       { 
         success: true, 
         data: {
           user: {
-            id: user.id,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt,
+            id: visitor.id,
           },
           preferences: {
-            id: preferences.id,
-            colorProfile: preferences.colorProfile,
-            contrastLevel: preferences.contrastLevel,
-            labelPreference: preferences.labelPreference,
-            createdAt: preferences.createdAt,
-            updatedAt: preferences.updatedAt,
+            colorProfile: visitor.colorBlindness || null,
+            contrastLevel: typeof preferences.contrast === 'number' ? `${preferences.contrast}%` : '100%',
+            labelPreference: preferences.textDescriptions ? 'enabled' : 'disabled',
+            ...preferences
           },
         }
       },
