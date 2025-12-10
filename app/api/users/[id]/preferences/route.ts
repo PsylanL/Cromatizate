@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { ensureUserExists } from '@/lib/api-helpers'
+import { ensureVisitorExists } from '@/lib/api-helpers'
 
 export async function PUT(
   request: NextRequest,
@@ -25,7 +25,7 @@ export async function PUT(
     }
 
     // Ensure user exists (creates if doesn't exist)
-    await ensureUserExists(id)
+    await ensureVisitorExists(id)
 
     // Get or create preferences
     let preferences = await prisma.preference.findUnique({

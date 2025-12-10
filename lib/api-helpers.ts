@@ -1,58 +1,80 @@
-import { prisma } from '@/lib/prisma'
+import { NextRequest } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
 /**
- * Ensures a user exists in the database, creating it if necessary
- * @param userId - The user ID to check/create
- * @returns The user object
- */
-export async function ensureUserExists(userId: string) {
-  let user = await prisma.user.findUnique({
-    where: { id: userId },
-    include: { preferences: true },
-  })
-
-  if (!user) {
-    user = await prisma.user.create({
-      data: { id: userId },
-      include: { preferences: true },
-    })
-  }
-
-  return user
-}
-
-/**
- * Extracts userId from request in priority order:
- * 1. body.userId (explicit override)
- * 2. header x-user-id (injected by middleware)
- * 3. cookie user_id (SSR fallback)
+ * REGLA 2: Método único de identificación
+ * Extrae visitor_id desde cookies (única fuente de identidad)
  * @param request - Next.js request object
- * @param body - Optional pre-parsed body object
- * @returns userId string or null
+ * @returns visitor_id string or null
  */
-export function getUserIdFromRequest(
-  request: Request | { headers: Headers; cookies: { get: (name: string) => { value: string } | undefined } },
-  body?: Record<string, unknown>
-): string | null {
-  // Priority 1: Try to get from body first (explicit override)
-  if (body && body.userId && typeof body.userId === 'string') {
-    return body.userId
+export function getVisitorId(request: NextRequest): string | null {
+  // Try visitor_id first (new standard)
+  const visitorId = request.cookies.get('visitor_id')?.value
+  if (visitorId) {
+    return visitorId
   }
 
-  // Priority 2: Try to get from headers (injected by middleware)
-  const headerUserId = request.headers.get('x-user-id')
-  if (headerUserId) {
-    return headerUserId
-  }
-
-  // Priority 3: Try to get from cookie (SSR fallback)
-  if ('cookies' in request) {
-    const cookieUserId = request.cookies.get('user_id')?.value
-    if (cookieUserId) {
-      return cookieUserId
-    }
+  // Fallback to user_id for backward compatibility
+  const userId = request.cookies.get('user_id')?.value
+  if (userId) {
+    return userId
   }
 
   return null
+}
+
+/**
+ * Creates a simple Supabase client without Auth/SSR
+ * Uses only the publishable key for direct table access
+ */
+export function createSimpleSupabaseClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
+
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error('Missing Supabase environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY must be set')
+  }
+
+  return createClient(supabaseUrl, supabaseKey)
+}
+
+/**
+ * Ensures a visitor exists in the Visitor table, creating it if necessary
+ * @param visitorId - The visitor ID to check/create
+ * @returns The visitor object or null if creation fails
+ */
+export async function ensureVisitorExists(visitorId: string): Promise<{ id: string; preferences: unknown; colorBlindness: string | null } | null> {
+  const supabase = createSimpleSupabaseClient()
+
+  // Check if visitor exists
+  const { data: existingVisitor } = await supabase
+    .from('Visitor')
+    .select('id, preferences, colorBlindness')
+    .eq('id', visitorId)
+    .maybeSingle()
+
+  if (existingVisitor) {
+    return existingVisitor
+  }
+
+  // Create visitor if doesn't exist
+  const { data: newVisitor, error } = await supabase
+    .from('Visitor')
+    .insert({
+      id: visitorId,
+      preferences: {},
+      colorBlindness: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+    .select('id, preferences, colorBlindness')
+    .single()
+
+  if (error) {
+    console.error('Error creating visitor:', error)
+    return null
+  }
+
+  return newVisitor
 }
 

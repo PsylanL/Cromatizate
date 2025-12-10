@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
-import { getUserIdFromRequest } from '@/lib/api-helpers'
+import { getVisitorId } from '@/lib/api-helpers'
 import { 
   generateRecommendations,
   analyzeInteractions,
@@ -9,7 +9,7 @@ import {
 
 export async function GET(request: NextRequest) {
   try {
-    const userId = getUserIdFromRequest(request)
+    const userId = getVisitorId(request)
 
     if (!userId) {
       return NextResponse.json(
@@ -222,7 +222,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { type, feedback, accepted } = body
 
-    const userId = getUserIdFromRequest(request, body)
+    const userId = getVisitorId(request)
 
     if (!userId) {
       return NextResponse.json(

@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import { Upload, LinkIcon, Download, Eye, Code, ArrowLeftRight, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,6 +30,8 @@ export function AdapterPanel() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [showComparison, setShowComparison] = useState(true)
   const [imageName, setImageName] = useState("")
+  const [aiCaption, setAiCaption] = useState("")
+  const [isGeneratingCaption, setIsGeneratingCaption] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -61,6 +63,82 @@ export function AdapterPanel() {
     }
   }
 
+  /**
+   * Convierte una URL de imagen a base64
+   */
+  const urlToBase64 = useCallback(async (url: string): Promise<string | null> => {
+    try {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      const blob = await response.blob()
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(blob)
+      })
+    } catch (error) {
+      console.error('Error converting URL to base64:', error)
+      return null
+    }
+  }, [])
+
+  /**
+   * Obtiene la descripción de IA para una imagen
+   */
+  const fetchAICaption = useCallback(async (image: string) => {
+    setIsGeneratingCaption(true)
+    setAiCaption("") // Limpiar descripción anterior
+    
+    try {
+      let base64Image = image
+      
+      // Si es una URL (no base64), convertirla primero
+      if (image.startsWith('http://') || image.startsWith('https://')) {
+        const converted = await urlToBase64(image)
+        if (!converted) {
+          throw new Error('No se pudo convertir la URL a base64')
+        }
+        base64Image = converted
+      }
+      
+      // Llamar al endpoint del agente de caption
+      const response = await fetch("/api/agents/caption", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ image: base64Image }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success && data.caption) {
+        setAiCaption(data.caption)
+      } else {
+        console.warn('No se pudo generar descripción de IA:', data.error || 'Unknown error')
+        setAiCaption("") // Si falla, dejar vacío para usar la descripción por defecto
+      }
+    } catch (error) {
+      console.error('Error fetching AI caption:', error)
+      setAiCaption("") // Si falla, dejar vacío para usar la descripción por defecto
+    } finally {
+      setIsGeneratingCaption(false)
+    }
+  }, [urlToBase64])
+
+  // Llamar al agente de caption cuando se carga una imagen
+  useEffect(() => {
+    if (uploadedImage) {
+      void fetchAICaption(uploadedImage)
+    } else {
+      // Si no hay imagen, limpiar la descripción
+      setAiCaption("")
+    }
+  }, [uploadedImage, fetchAICaption])
+
   const getAdaptationFilter = () => {
     const hueRotations: Record<string, number> = {
       protanopia: 40,
@@ -86,25 +164,48 @@ export function AdapterPanel() {
     setTimeout(() => setIsProcessing(false), 1500)
   }
 
-  const generateJsonLd = () => {
-    return JSON.stringify(
-      {
-        "@context": "https://schema.org",
-        "@type": "ImageObject",
-        name: imageName,
-        description: `Imagen adaptada para ${colorBlindnessTypes.find((t) => t.id === adaptationType)?.name}`,
-        accessibilityFeature: ["colorAdaptation", `${adaptationType}Simulation`],
-        accessibilityHazard: "none",
-        creator: {
-          "@type": "Organization",
-          name: "Cromatizate",
-        },
-        dateModified: new Date().toISOString(),
+  // Memoizar el JSON-LD para que se regenere solo cuando cambien las dependencias
+  const jsonLd = useMemo(() => {
+    // Si NO hay imagen cargada, retornar objeto vacío
+    if (!uploadedImage) {
+      return JSON.stringify({}, null, 2)
+    }
+
+    // Obtener el nombre legible del tipo de daltonismo
+    const adaptationTypeName = colorBlindnessTypes.find((t) => t.id === adaptationType)?.name || adaptationType
+
+    // Usar descripción de IA si está disponible, sino usar la descripción por defecto
+    const description = aiCaption || `Imagen adaptada para ${adaptationTypeName}`
+
+    // Construir el objeto JSON-LD con todos los campos requeridos
+    const jsonLdObject: Record<string, unknown> = {
+      "@context": "https://schema.org",
+      "@type": "ImageObject",
+      "name": imageName || "imagen",
+      "contentUrl": uploadedImage,
+      "image": uploadedImage,
+      "representativeOfPage": true,
+      "description": description,
+      "accessibilityFeature": [
+        "colorAdaptation",
+        `${adaptationType}Simulation`
+      ],
+      "accessibilityHazard": "none",
+      "inLanguage": "es",
+      "creator": {
+        "@type": "Organization",
+        "name": "Cromatizate"
       },
-      null,
-      2,
-    )
-  }
+      "dateModified": new Date().toISOString()
+    }
+
+    // Agregar descripción generada por IA si está disponible
+    if (aiCaption) {
+      jsonLdObject["aiGeneratedDescription"] = aiCaption
+    }
+
+    return JSON.stringify(jsonLdObject, null, 2)
+  }, [uploadedImage, imageName, adaptationType, aiCaption])
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
@@ -283,11 +384,17 @@ export function AdapterPanel() {
               <CardTitle className="text-lg font-bold flex items-center gap-2">
                 <Code className="h-5 w-5" aria-hidden="true" />
                 <span>Metadatos JSON-LD</span>
+                {isGeneratingCaption && (
+                  <Badge variant="secondary" className="ml-2">
+                    <RefreshCw className="h-3 w-3 mr-1 animate-spin" aria-hidden="true" />
+                    Generando descripción con IA...
+                  </Badge>
+                )}
               </CardTitle>
             </CardHeader>
             <CardContent>
               <pre className="bg-secondary p-4 rounded-lg overflow-x-auto text-sm text-muted-foreground font-mono">
-                <code>{generateJsonLd()}</code>
+                <code>{jsonLd}</code>
               </pre>
             </CardContent>
           </Card>
