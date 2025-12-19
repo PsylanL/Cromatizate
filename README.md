@@ -1,7 +1,7 @@
 # Cromatizate
 <img width="1622" height="1291" alt="image" src="https://github.com/user-attachments/assets/b89336a8-dd60-44b9-80a3-ac5a5e439132" />
 
-**Cromatizate** is an academic project that improves visual accessibility for people with color vision deficiencies (color blindness) through image processing, semantic metadata generation (JSON-LD), and the selective use of AI models.
+**Cromatizate** is an academic project that improves visual accessibility for people with color vision deficiencies (color blindness) through image processing, semantic metadata generation (JSON-LD), and the selective use of one AI model.
 
 ## 1. Project Introduction
 
