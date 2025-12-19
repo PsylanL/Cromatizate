@@ -123,7 +123,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=your_supabase_public_key
 ```
 # Replicate API (Optional - only for AI descriptions)
 REPLICATE_API_TOKEN=your_replicate_token
-```
+
 ### Commands
 
 ```bash
