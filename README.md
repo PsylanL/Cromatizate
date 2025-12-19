@@ -59,6 +59,8 @@ The system generates metadata following the **Schema.org** standard, including:
 When an image is loaded, the system calls an AI agent to generate a textual description.
 - **Model**: Salesforce BLIP-2 (via Replicate API).
 - **Endpoint**: `/api/agents/caption`
+<img width="702" height="52" alt="image" src="https://github.com/user-attachments/assets/b0e87abe-9201-4e6f-a0df-c7500688de3f" />
+
 
 ---
 
